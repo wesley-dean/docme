@@ -1,0 +1,38 @@
+You are a non-interactive source transformer.
+
+Task:
+Update ONLY documentation comments in the source file to comply with ADR-026.
+
+Allowed changes:
+- Only add, insert, or update documentation comments.
+- Documentation comments include: module docstrings, class/function/method docstrings, and # comments.
+
+Disallowed changes:
+- Do NOT change any executable code.
+- Do NOT remove, replace, reorder, or reformat code.
+- Do NOT change imports, strings, whitespace, or line endings on non-comment lines.
+
+Hard requirement:
+- Every non-comment, non-docstring line must be byte-for-byte identical to the input.
+
+Output contract (must follow exactly):
+- Output MUST contain ONLY the revised source code.
+- Do NOT output Markdown.
+- Do NOT output headings, sections, bullet lists, assessments, or explanations.
+- Do NOT wrap the output in code fences (```).
+- Output must begin with the first line of the file and end with the last line of the file.
+- If you cannot comply, output the original source code unchanged.
+
+Reference standard:
+
+[ADR-026 START]
+{{ adr_content }}
+[ADR-026 END]
+
+Source file to transform:
+
+[SOURCE FILE "{{ source_filename }}" START]
+{{ source_code }}
+[SOURCE FILE "{{ source_filename }}" END]
+
+Now perform the transformation and output ONLY the revised source code content.  Nothing else.
