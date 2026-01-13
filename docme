@@ -1,0 +1,199 @@
+#!/bin/sh
+#
+# @file docme
+# @brief Apply ADR-026-style documentation updates to source files using an LLM, with safety-oriented output sanitization.
+#
+# @details
+# This script is a thin orchestration layer around three steps:
+# 1) generate a "comment-only" transformation prompt for a target source file,
+# 2) invoke an LLM with a selectable model, and
+# 3) sanitize the LLM output before writing it back.
+#
+# The primary safety goal is to avoid destructive rewrites and to ensure the
+# returned content is plain source text (no Markdown fences), so that the result
+# can be written back into a file without additional manual cleanup.
+#
+# @par Usage
+# @code
+# docme /path/to/file1 [/path/to/file2 ...]
+# cat file | docme > file.documented
+# @endcode
+#
+# @par Behavior
+# - For each filename provided:
+#     comment_code_prompt.sh <file> | llm -m "${model}" | sanitize | overwrite <file>
+#   with a backup created as: <file>~
+# - With no filenames:
+#     reads source from STDIN and writes to STDOUT (no backups)
+#
+# @par Configuration
+# @var model
+# The LLM model name passed to `llm -m`.  Defaults to "gpt-5.2".  Override via:
+# `model=... docme file`.
+#
+# @par Dependencies and expectations
+# - Expects comment_code_prompt.sh to be alongside this script (same directory).
+# - Optionally sources sanitize_llm_output.sh (if present) and uses
+#   sanitize_llm_output_helper().
+# - If sanitize_llm_output_helper() is not present after sourcing, a compatible
+#   fallback is defined locally in this script.
+#
+
+set -eu
+
+model="${model:-gpt-5.2}"
+
+# Determine the directory containing this script so that sibling helper scripts
+# can be located reliably, regardless of the caller's working directory.
+SCRIPT_DIR=$(
+  CDPATH='' cd -- "$(dirname -- "$0")" && pwd
+)
+
+# Path to the prompt generator responsible for emitting instructions and/or
+# context for the LLM. This script must be executable; failure is fatal because
+# docme cannot construct the transformation request without it.
+COMMENT_PROMPT="${SCRIPT_DIR}/comment_code_prompt.sh"
+
+# Optional sanitizer extension. If present, it may provide a project-specific
+# sanitize_llm_output_helper() with stricter or different rules than the
+# fallback implemented below.
+SANITIZER="${SCRIPT_DIR}/sanitize_llm_output.sh"
+
+if [ ! -x "$COMMENT_PROMPT" ]; then
+  printf '%s\n' "docme: error: comment_code_prompt.sh not found or not executable at: $COMMENT_PROMPT" >&2
+  exit 1
+fi
+
+# Source sanitizer if present (as requested).
+# This file is optional by design; absence is not an error.
+if [ -f "$SANITIZER" ]; then
+  # shellcheck source=/dev/null
+  . "$SANITIZER" || true
+fi
+
+# Provide a fallback sanitizer if sanitize_llm_output_helper() is not defined.
+# The contract for this helper is:
+# - read candidate output from STDIN,
+# - emit sanitized plain text to STDOUT,
+# - fail (non-zero) if the output appears unsafe to write back as source code.
+if ! command -v sanitize_llm_output_helper >/dev/null 2>&1; then
+  sanitize_llm_output_helper() {
+    # Use a private temp directory so intermediate files do not collide and can
+    # be removed reliably. The trap is set early to reduce leak risk on signals.
+    tmpdir=$(mktemp -d) || return 1
+    in="$tmpdir/in"
+    out="$tmpdir/out"
+    trap 'rm -rf "$tmpdir"' EXIT INT TERM
+
+    # Capture all STDIN first so we can run multiple checks deterministically.
+    cat >"$in" || { rm -rf "$tmpdir"; return 1; }
+
+    # Remove a leading and trailing fence line (``` or ```lang).
+    # This supports the common LLM behavior of wrapping code in Markdown fences.
+    sed '1{/^```/d;}' "$in" | sed '${/^```/d;}' >"$out" || { rm -rf "$tmpdir"; return 1; }
+
+    # Refuse if any fence lines remain.
+    # Leaving fences in place would violate the "plain source output" contract
+    # and can cause downstream tooling to treat the file as malformed.
+    if grep -q '^[[:space:]]*```' "$out"; then
+      printf '%s\n' "sanitize_llm_output: refusing output containing code fences" >&2
+      rm -rf "$tmpdir"
+      return 1
+    fi
+
+    # Emit the sanitized output exactly as text. Downstream callers decide
+    # whether to write it to a file or pipe it further.
+    cat "$out"
+
+    rm -rf "$tmpdir"
+    trap - EXIT INT TERM
+    return 0
+  }
+fi
+
+process_file() {
+  # @brief Document a single file in-place, creating a backup of the original.
+  #
+  # @details
+  # This function implements the "safe overwrite" path:
+  # - validate the input is a regular file,
+  # - produce a sanitized candidate output into a temporary file,
+  # - only if all steps succeed, rename the original to <file>~ and replace it.
+  #
+  # This ordering is intentional: it minimizes the chance of leaving a partially
+  # written file if the LLM call fails or sanitation rejects the output.
+  #
+  # @param $1
+  #   filename: Path to a regular file to be updated in-place.
+  #
+  # @retval 0
+  #   The file was updated and a backup was created.
+  #
+  # @retval 1
+  #   The file was not updated. A message is emitted to STDERR describing the
+  #   failure. Where possible, the original is left unchanged.
+  filename="$1"
+
+  if [ ! -f "$filename" ]; then
+    printf '%s\n' "docme: error: not a regular file: $filename" >&2
+    return 1
+  fi
+
+  # Write to a temp file first so we can fail closed if any pipeline step fails.
+  tmp=$(mktemp) || return 1
+
+  # Backup name is deterministic (<file>~) to make recovery obvious and to align
+  # with common editor/CLI backup conventions.
+  backup="${filename}~"
+
+  # Pipeline:
+  # - COMMENT_PROMPT generates the prompt/context for this file,
+  # - llm produces proposed documented source,
+  # - sanitize_llm_output_helper enforces the "plain text, no fences" contract.
+  if ! "$COMMENT_PROMPT" "$filename" \
+      | llm -m "$model" \
+      | sanitize_llm_output_helper >"$tmp"; then
+    printf '%s\n' "docme: error: failed processing: $filename (leaving original unchanged)" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # Backup original, then overwrite with sanitized output.
+  # This is a rename-based update rather than in-place editing to reduce the
+  # risk of corruption on interruption.
+  mv -- "$filename" "$backup"
+  mv -- "$tmp" "$filename"
+
+  printf '%s\n' "docme: updated: $filename (backup: $backup)" >&2
+  return 0
+}
+
+process_stream() {
+  # @brief Document STDIN and emit the result to STDOUT without touching the filesystem.
+  #
+  # @details
+  # This mode is intended for previewing transformations and for integrating
+  # docme into pipelines. Because no target filename exists, docme does not
+  # create backups and does not attempt to validate file types.
+  #
+  # Input/Output contract:
+  # - reads source text from STDIN,
+  # - writes sanitized documented source text to STDOUT,
+  # - emits errors to STDERR and returns non-zero on failure.
+  #
+  # STDIN -> prompt -> llm -> sanitize -> STDOUT
+  "$COMMENT_PROMPT" \
+    | llm -m "$model" \
+    | sanitize_llm_output_helper
+}
+
+# CLI dispatch:
+# - no args: stream mode (STDIN -> STDOUT)
+# - args: file mode (update each file in-place with backups)
+if [ "$#" -eq 0 ]; then
+  process_stream
+else
+  for filename in "$@"; do
+    process_file "$filename"
+  done
+fi
