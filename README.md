@@ -159,7 +159,7 @@ comment_code_prompt.sh - source_from_stdin
 
 #### Options
 
-- `-a ADR.md` — path to ADR file  
+- `-a ADR.md` — path to ADR file
   Default: `ADR-026-documentation-first-source-code-commenting-standard.md`
 - `-t TEMPLATE.j2` — Jinja2 template path
 - `-h` — help
@@ -236,11 +236,69 @@ This design choice is informed by extensive experimentation across:
 The conclusions from those experiments are documented separately to preserve
 institutional memory.
 
+## Frequently Anticipated Questions
+
+### Why ADR-026 and not ADR-001
+
+Because the ADR was copied out of another project where it was, in fact,
+ADR-026.
+
+### Why sanitize to remove the Markdown code fences
+
+Because some of the local LLM tools (e.g., ollama) with certain models proved
+to be "too helpful" and not follow all of the instructions, particularly those
+that relate to how the code is spit out at the end.  The sanitize script looks
+to see if the output starts with a Markdown fence, it removes that line; if
+it ends with the end of a code fence, remove that, too.
+
+### Why all of the POSIX nonsense?
+
+Because I'm pedantic and I want this to work in a variety of environments,
+including when I run it under Linux as well as OpenBSD and FreeBSD, not to
+mention situations where non-current versions of Bash are used.
+
+#### But you use Bash everywhere?
+
+Yes.  Yes I do.
+
+### But why so much documentation
+
+Because, again, pedantic.  More importantly, because I work on a bunch of
+projects and stuff gets confusing, because I forget stuff, because good
+documentation is important by itself, not to mention as a signal of someone
+taking their craft seriously.
+
+#### Could you just send it to ChatGPT, Copilot, etc. and ask it what's up
+
+Yes.  Yes I could.  I would rather the documentation live with the source
+code and not require external tooling.
+
+### Won't the documentation get out of date
+
+It may very well become outdated.  Regenerate the documentation.  Dependencies
+become outdated, too.
+
+### Could this be used in a CI/CD pipeline
+
+Sure, why not.  I suspect that LLM calls may become expensive when large
+numbers of files are included in PRs and/or changed often.
+
+I would recommend reviewing the changes before merging them into a repo.
+
+### Can I run this locally with something like ollama
+
+Yes.  Absolutely.  That said, I've found that smaller models tend to not do
+a very good job of following directions, documenting entire files (even when
+very small), etc..
+
+The results of my experimenting are found in:
+[llm-assisted-documentation-experiments.md](./llm-assisted-documentation-experiments.md)
+
 ---
 
 ## License
 
-Creative Commons License 1.0 Universal.  
+Creative Commons License 1.0 Universal.
 See [LICENSE](LICENSE).
 
 ---
